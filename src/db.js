@@ -72,18 +72,56 @@ function initSchema(conn) {
       updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS work_orders (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      title           TEXT NOT NULL,
+      type            TEXT NOT NULL,
+      pipe_id         INTEGER,
+      station_id      INTEGER,
+      priority        TEXT NOT NULL DEFAULT 'normal',
+      original_priority TEXT NOT NULL DEFAULT 'normal',
+      description     TEXT,
+      reporter_id     INTEGER NOT NULL,
+      assignee_id     INTEGER,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      escalated_at    TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (pipe_id) REFERENCES pipe_segments(id),
+      FOREIGN KEY (station_id) REFERENCES pump_stations(id),
+      FOREIGN KEY (reporter_id) REFERENCES users(id),
+      FOREIGN KEY (assignee_id) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS work_order_logs (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      work_order_id   INTEGER NOT NULL,
+      from_status     TEXT,
+      to_status       TEXT NOT NULL,
+      operator_id     INTEGER NOT NULL,
+      remark          TEXT,
+      created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (work_order_id) REFERENCES work_orders(id),
+      FOREIGN KEY (operator_id) REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_pipe_district ON pipe_segments(district);
     CREATE INDEX IF NOT EXISTS idx_pipe_status   ON pipe_segments(status);
     CREATE INDEX IF NOT EXISTS idx_station_district ON pump_stations(district);
     CREATE INDEX IF NOT EXISTS idx_station_status   ON pump_stations(status);
+    CREATE INDEX IF NOT EXISTS idx_wo_status ON work_orders(status);
+    CREATE INDEX IF NOT EXISTS idx_wo_priority ON work_orders(priority);
+    CREATE INDEX IF NOT EXISTS idx_wo_assignee ON work_orders(assignee_id);
+    CREATE INDEX IF NOT EXISTS idx_wo_reporter ON work_orders(reporter_id);
+    CREATE INDEX IF NOT EXISTS idx_wo_log_order ON work_order_logs(work_order_id);
   `);
 }
 
 /** 清空所有业务数据（测试用）。 */
 function resetAll() {
   const conn = getDb();
-  conn.exec('DELETE FROM pipe_segments; DELETE FROM pump_stations; DELETE FROM users;');
-  conn.exec("DELETE FROM sqlite_sequence WHERE name IN ('pipe_segments','pump_stations','users');");
+  conn.exec('DELETE FROM work_order_logs; DELETE FROM work_orders; DELETE FROM pipe_segments; DELETE FROM pump_stations; DELETE FROM users;');
+  conn.exec("DELETE FROM sqlite_sequence WHERE name IN ('work_order_logs','work_orders','pipe_segments','pump_stations','users');");
 }
 
 function close() {

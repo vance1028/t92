@@ -30,7 +30,40 @@ function seed({ force = false } = {}) {
   ];
   for (const s of stations) store.createStation(s);
 
-  return { skipped: false, users: 3, pipes: pipes.length, stations: stations.length };
+  const adminUser = store.getUserByUsername('admin');
+  const operatorUser = store.getUserByUsername('operator');
+  const firstPipe = store.getPipeByCode('YS-DX-001');
+  const firstStation = store.getStationByCode('PZ-001');
+
+  const wo1 = store.createWorkOrder({
+    title: '东湖区滨江路积水点紧急处置',
+    type: 'flooding',
+    priority: 'urgent',
+    description: '昨晚暴雨后滨江路与解放大道交叉口积水约 30cm，影响交通，请尽快处置。',
+    reporterId: adminUser.id,
+    pipeId: firstPipe.id,
+  });
+  store.assignWorkOrder(wo1.id, operatorUser.id, adminUser.id);
+
+  const wo2 = store.createWorkOrder({
+    title: '西湖区 WS-XH-014 管段破损排查',
+    type: 'pipe_damage',
+    priority: 'high',
+    description: '巡检发现 WS-XH-014 管段局部沉降疑似破损，需进一步确认并安排维修。',
+    reporterId: operatorUser.id,
+    pipeId: store.getPipeByCode('WS-XH-014').id,
+  });
+
+  store.createWorkOrder({
+    title: '新城排涝泵站异响排查',
+    type: 'pump_fault',
+    priority: 'normal',
+    description: '二号泵运行时有异响，建议安排检修。',
+    reporterId: operatorUser.id,
+    stationId: firstStation.id,
+  });
+
+  return { skipped: false, users: 3, pipes: pipes.length, stations: stations.length, workOrders: 3 };
 }
 
 module.exports = { seed };

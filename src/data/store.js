@@ -254,6 +254,235 @@ function deleteStation(id) {
 
 /* -------------------------------- 计数 -------------------------------- */
 
+/* -------------------------------- 工单 -------------------------------- */
+
+const WORK_ORDER_TYPES = ['flooding', 'pipe_damage', 'pump_fault', 'other'];
+const WORK_ORDER_STATUS = ['pending', 'assigned', 'processing', 'reviewing', 'closed', 'cancelled'];
+const WORK_ORDER_PRIORITIES = ['normal', 'high', 'urgent'];
+
+const PRIORITY_TIMEOUT_HOURS = {
+  normal: 24,
+  high: 8,
+  urgent: 2,
+};
+
+const STATUS_TRANSITIONS = {
+  pending: ['assigned', 'cancelled'],
+  assigned: ['processing', 'cancelled'],
+  processing: ['reviewing', 'cancelled'],
+  reviewing: ['processing', 'closed', 'cancelled'],
+  closed: [],
+  cancelled: [],
+};
+
+function canTransition(from, to) {
+  const allowed = STATUS_TRANSITIONS[from];
+  return allowed && allowed.includes(to);
+}
+
+function nextPriority(priority) {
+  const idx = WORK_ORDER_PRIORITIES.indexOf(priority);
+  if (idx < 0 || idx >= WORK_ORDER_PRIORITIES.length - 1) return null;
+  return WORK_ORDER_PRIORITIES[idx + 1];
+}
+
+function mapWorkOrder(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    type: row.type,
+    pipeId: row.pipe_id,
+    stationId: row.station_id,
+    priority: row.priority,
+    originalPriority: row.original_priority,
+    description: row.description,
+    reporterId: row.reporter_id,
+    assigneeId: row.assignee_id,
+    status: row.status,
+    escalatedAt: row.escalated_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapWorkOrderLog(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    workOrderId: row.work_order_id,
+    fromStatus: row.from_status,
+    toStatus: row.to_status,
+    operatorId: row.operator_id,
+    remark: row.remark,
+    createdAt: row.created_at,
+  };
+}
+
+function listWorkOrders({ status, priority, type, assigneeId, reporterId, keyword, onlyOverdue } = {}) {
+  const where = [];
+  const params = [];
+  if (status) { where.push('status = ?'); params.push(status); }
+  if (priority) { where.push('priority = ?'); params.push(priority); }
+  if (type) { where.push('type = ?'); params.push(type); }
+  if (assigneeId) { where.push('assignee_id = ?'); params.push(assigneeId); }
+  if (reporterId) { where.push('reporter_id = ?'); params.push(reporterId); }
+  if (keyword) {
+    where.push('(title LIKE ? OR description LIKE ?)');
+    params.push(`%${keyword}%`, `%${keyword}%`);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = getDb()
+    .prepare(`SELECT * FROM work_orders ${clause} ORDER BY id DESC`)
+    .all(...params)
+    .map(mapWorkOrder);
+
+  if (onlyOverdue) {
+    const now = Date.now();
+    return rows.filter((wo) => {
+      if (['processing', 'reviewing', 'closed', 'cancelled'].includes(wo.status)) return false;
+      const timeoutMs = PRIORITY_TIMEOUT_HOURS[wo.priority] * 60 * 60 * 1000;
+      const createdMs = new Date(wo.createdAt).getTime();
+      return now - createdMs > timeoutMs;
+    });
+  }
+
+  return rows;
+}
+
+function getWorkOrderById(id) {
+  return mapWorkOrder(getDb().prepare('SELECT * FROM work_orders WHERE id = ?').get(id));
+}
+
+function createWorkOrder(data) {
+  const priority = data.priority || 'normal';
+  const info = getDb()
+    .prepare(
+      `INSERT INTO work_orders
+        (title, type, pipe_id, station_id, priority, original_priority, description, reporter_id, status)
+       VALUES (@title, @type, @pipeId, @stationId, @priority, @originalPriority, @description, @reporterId, 'pending')`,
+    )
+    .run({
+      title: data.title,
+      type: data.type,
+      pipeId: data.pipeId || null,
+      stationId: data.stationId || null,
+      priority,
+      originalPriority: priority,
+      description: data.description || null,
+      reporterId: data.reporterId,
+    });
+  const wo = getWorkOrderById(info.lastInsertRowid);
+  addWorkOrderLog(wo.id, null, 'pending', data.reporterId, '工单创建');
+  return getWorkOrderById(info.lastInsertRowid);
+}
+
+function updateWorkOrder(id, data) {
+  const allowed = {
+    title: 'title',
+    type: 'type',
+    pipeId: 'pipe_id',
+    stationId: 'station_id',
+    description: 'description',
+  };
+  const sets = [];
+  const params = [];
+  for (const [key, col] of Object.entries(allowed)) {
+    if (data[key] !== undefined) { sets.push(`${col} = ?`); params.push(data[key]); }
+  }
+  if (sets.length === 0) return getWorkOrderById(id);
+  sets.push("updated_at = datetime('now')");
+  params.push(id);
+  getDb().prepare(`UPDATE work_orders SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  return getWorkOrderById(id);
+}
+
+function assignWorkOrder(id, assigneeId, operatorId) {
+  const wo = getWorkOrderById(id);
+  if (!wo) return null;
+  if (wo.status !== 'pending') {
+    throw new Error('只有待派单的工单可以派单');
+  }
+  getDb().prepare(
+    "UPDATE work_orders SET assignee_id = ?, status = 'assigned', updated_at = datetime('now') WHERE id = ?",
+  ).run(assigneeId, id);
+  addWorkOrderLog(id, 'pending', 'assigned', operatorId, `派单给用户 #${assigneeId}`);
+  return getWorkOrderById(id);
+}
+
+function transitionWorkOrder(id, toStatus, operatorId, remark) {
+  const wo = getWorkOrderById(id);
+  if (!wo) return null;
+  if (!canTransition(wo.status, toStatus)) {
+    throw new Error(`不允许从 ${wo.status} 变更为 ${toStatus}`);
+  }
+  getDb().prepare(
+    "UPDATE work_orders SET status = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(toStatus, id);
+  addWorkOrderLog(id, wo.status, toStatus, operatorId, remark);
+  return getWorkOrderById(id);
+}
+
+function addWorkOrderLog(workOrderId, fromStatus, toStatus, operatorId, remark) {
+  getDb()
+    .prepare(
+      `INSERT INTO work_order_logs
+        (work_order_id, from_status, to_status, operator_id, remark)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(workOrderId, fromStatus, toStatus, operatorId, remark || null);
+}
+
+function listWorkOrderLogs(workOrderId) {
+  return getDb()
+    .prepare('SELECT * FROM work_order_logs WHERE work_order_id = ? ORDER BY id ASC')
+    .all(workOrderId)
+    .map(mapWorkOrderLog);
+}
+
+function checkAndEscalateOverdue() {
+  const now = new Date();
+  const pendingStatuses = ['pending', 'assigned'];
+  const updated = [];
+
+  const rows = getDb()
+    .prepare(`SELECT * FROM work_orders WHERE status IN (${pendingStatuses.map(() => '?').join(',')})`)
+    .all(...pendingStatuses);
+
+  for (const row of rows) {
+    const timeoutHours = PRIORITY_TIMEOUT_HOURS[row.priority];
+    const timeoutMs = timeoutHours * 60 * 60 * 1000;
+    const createdMs = new Date(row.created_at).getTime();
+    const elapsed = now.getTime() - createdMs;
+
+    if (elapsed > timeoutMs) {
+      const next = nextPriority(row.priority);
+      if (next) {
+        getDb().prepare(
+          `UPDATE work_orders
+           SET priority = ?, escalated_at = COALESCE(escalated_at, datetime('now')),
+               updated_at = datetime('now')
+           WHERE id = ?`,
+        ).run(next, row.id);
+        updated.push({ id: row.id, from: row.priority, to: next });
+      }
+    }
+  }
+
+  return updated;
+}
+
+function isWorkOrderOverdue(workOrder) {
+  if (['processing', 'reviewing', 'closed', 'cancelled'].includes(workOrder.status)) {
+    return false;
+  }
+  const timeoutMs = PRIORITY_TIMEOUT_HOURS[workOrder.priority] * 60 * 60 * 1000;
+  const createdMs = new Date(workOrder.createdAt).getTime();
+  return Date.now() - createdMs > timeoutMs;
+}
+
+/* -------------------------------- 计数 -------------------------------- */
+
 function countUsers() {
   return getDb().prepare('SELECT COUNT(*) AS n FROM users').get().n;
 }
@@ -280,4 +509,21 @@ module.exports = {
   createStation,
   updateStation,
   deleteStation,
+  WORK_ORDER_TYPES,
+  WORK_ORDER_STATUS,
+  WORK_ORDER_PRIORITIES,
+  PRIORITY_TIMEOUT_HOURS,
+  STATUS_TRANSITIONS,
+  canTransition,
+  mapWorkOrder,
+  mapWorkOrderLog,
+  listWorkOrders,
+  getWorkOrderById,
+  createWorkOrder,
+  updateWorkOrder,
+  assignWorkOrder,
+  transitionWorkOrder,
+  listWorkOrderLogs,
+  checkAndEscalateOverdue,
+  isWorkOrderOverdue,
 };
