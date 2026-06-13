@@ -1,0 +1,29 @@
+{
+  "name": "urban-drainage-platform",
+  "version": "1.0.0",
+  "description": "城市排水管网防汛运维管理平台 - 后端 API 服务",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "drainage",
+    "flood-control",
+    "express",
+    "sqlite",
+    "rest-api"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "supertest": "^7.0.0"
+  }
+}
