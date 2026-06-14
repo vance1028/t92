@@ -418,3 +418,41 @@ test('关联不存在的管段返回 400', async () => {
     .send({ title: 'test', type: 'pipe_damage', pipeId: 99999 });
   assert.equal(res.status, 400);
 });
+
+test('时区问题验证：新建的紧急工单不会立即超时', async () => {
+  const token = await login('operator', 'operator123');
+  const createRes = await request(app)
+    .post('/api/work-orders')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ title: '时区验证工单', type: 'pipe_damage', priority: 'urgent' });
+  assert.equal(createRes.status, 201);
+  const woId = createRes.body.data.id;
+
+  const detailRes = await request(app)
+    .get(`/api/work-orders/${woId}`)
+    .set('Authorization', `Bearer ${token}`);
+  assert.equal(detailRes.body.data.overdue, false);
+
+  const listRes = await request(app)
+    .get('/api/work-orders?onlyOverdue=true')
+    .set('Authorization', `Bearer ${token}`);
+  assert.equal(listRes.body.data.some((wo) => wo.id === woId), false);
+});
+
+test('时区问题验证：新建的高优先级工单不会立即被超时升级', async () => {
+  const adminToken = await login('admin', 'admin123');
+  const createRes = await request(app)
+    .post('/api/work-orders')
+    .set('Authorization', `Bearer ${adminToken}`)
+    .send({ title: '高优先级工单', type: 'other', priority: 'high' });
+  const woId = createRes.body.data.id;
+
+  const checkRes = await request(app)
+    .post('/api/work-orders/check-overdue')
+    .set('Authorization', `Bearer ${adminToken}`);
+  assert.equal(checkRes.status, 200);
+
+  const updated = store.getWorkOrderById(woId);
+  assert.equal(updated.priority, 'high', '新建的高优先级工单不应被立即升级');
+  assert.equal(updated.escalatedAt, null, '升级时间应为空');
+});

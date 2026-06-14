@@ -3,6 +3,12 @@
 const { getDb } = require('../db');
 const { hashPassword } = require('../utils/password');
 
+function parseSqliteUtcDate(str) {
+  if (!str) return null;
+  const iso = str.replace(' ', 'T') + 'Z';
+  return new Date(iso);
+}
+
 /**
  * 数据仓储层：所有 SQL 都集中在这里，路由层只调用这些方法。
  * 对外返回的对象统一用 camelCase 字段，便于前端消费。
@@ -338,13 +344,7 @@ function listWorkOrders({ status, priority, type, assigneeId, reporterId, keywor
     .map(mapWorkOrder);
 
   if (onlyOverdue) {
-    const now = Date.now();
-    return rows.filter((wo) => {
-      if (['processing', 'reviewing', 'closed', 'cancelled'].includes(wo.status)) return false;
-      const timeoutMs = PRIORITY_TIMEOUT_HOURS[wo.priority] * 60 * 60 * 1000;
-      const createdMs = new Date(wo.createdAt).getTime();
-      return now - createdMs > timeoutMs;
-    });
+    return rows.filter((wo) => isWorkOrderOverdue(wo));
   }
 
   return rows;
@@ -452,7 +452,7 @@ function checkAndEscalateOverdue() {
   for (const row of rows) {
     const timeoutHours = PRIORITY_TIMEOUT_HOURS[row.priority];
     const timeoutMs = timeoutHours * 60 * 60 * 1000;
-    const createdMs = new Date(row.created_at).getTime();
+    const createdMs = parseSqliteUtcDate(row.created_at).getTime();
     const elapsed = now.getTime() - createdMs;
 
     if (elapsed > timeoutMs) {
@@ -477,7 +477,7 @@ function isWorkOrderOverdue(workOrder) {
     return false;
   }
   const timeoutMs = PRIORITY_TIMEOUT_HOURS[workOrder.priority] * 60 * 60 * 1000;
-  const createdMs = new Date(workOrder.createdAt).getTime();
+  const createdMs = parseSqliteUtcDate(workOrder.createdAt).getTime();
   return Date.now() - createdMs > timeoutMs;
 }
 
